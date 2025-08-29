@@ -9,6 +9,9 @@ from drf_spectacular.views import SpectacularSwaggerView
 from rest_framework.authtoken import views as tokenviews
 from rest_framework.routers import DefaultRouter
 
+from dojo.views import custom_report_view
+
+
 from dojo import views
 from dojo.announcement.urls import urlpatterns as announcement_urls
 from dojo.api_v2.views import (
@@ -249,6 +252,9 @@ urlpatterns += [
     re_path(r"^manage_files/(?P<oid>\d+)/(?P<obj_type>\w+)$", views.manage_files, name="manage_files"),
     re_path(r"^access_file/(?P<fid>\d+)/(?P<oid>\d+)/(?P<obj_type>\w+)$", views.access_file, name="access_file"),
     re_path(r"^{}/(?P<path>.*)$".format(settings.MEDIA_URL.strip("/")), views.protected_serve, {"document_root": settings.MEDIA_ROOT}),
+    #custom report
+    re_path(r"^{}engagement/(?P<eid>\d+)/custom_report/$".format(get_system_setting("url_prefix")), custom_report_view, name="custom_report"),
+
 ]
 
 urlpatterns += api_v2_urls

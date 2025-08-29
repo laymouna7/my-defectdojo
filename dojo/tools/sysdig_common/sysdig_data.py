@@ -6,8 +6,7 @@ if TYPE_CHECKING:
 
 class SysdigData:
 
-    @classmethod
-    def _map_severity(cls, severity):
+    def _map_severity(self, severity):
         severity_mapping = {
             "CRITICAL": "Critical",
             "HIGH": "High",
@@ -16,7 +15,7 @@ class SysdigData:
             "NEGLIGIBLE": "Informational",
         }
 
-        return severity_mapping.get(severity.upper() if severity else "", "Informational")
+        return severity_mapping.get(severity, "Informational")
 
     """
     Data class to represent the Sysdig data extracted from sources like CSV or JSON.

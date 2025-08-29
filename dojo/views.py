@@ -238,3 +238,20 @@ def access_file(request, fid, oid, obj_type, *, url=False):
     check_file_belongs_to_object(file, obj_manager, obj.id)
 
     return generate_file_response(file)
+
+def custom_report_view(request, eid):
+    if int(eid) == 0:
+        engagements = Engagement.objects.all()
+        findings = Finding.objects.filter(test__engagement__in=engagements)
+        context = {
+            'engagements': engagements,
+            'findings': findings
+        }
+    else:
+        engagement = get_object_or_404(Engagement, pk=eid)
+        findings = Finding.objects.filter(test__engagement=engagement)
+        context = {
+            'engagement': engagement,
+            'findings': findings
+        }
+    return render(request, 'dojo/custom_report.html', context)

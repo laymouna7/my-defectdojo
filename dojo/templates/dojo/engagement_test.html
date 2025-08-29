@@ -56,7 +56,7 @@
                             <th>{% dojo_sort request 'Period' 'target_start' 'asc' %}</th>
                             <th>Status</th>
                             <th class="prod_name">{% dojo_sort request 'Product' 'product__name' 'asc' %}</th>
-                            <th class="prod_name">{% dojo_sort request 'Product Type' 'product__prod_type__name' %}</th>
+                            <th class="prod_name">{% dojo_sort request 'Product Type' 'product__prod_type__name' 'asc' %}</th>
                             <th>{% dojo_sort request 'Lead' 'lead__first_name' %}</th>
                             <th>Tests</th>
                             {% if system_settings.enable_jira %}
@@ -100,11 +100,14 @@
                                                     </a>
                                                 </li>
                                                 {% endif %}
+
+                                                <!-- ✅ Added Custom Report button -->
                                                 <li role="presentation">
                                                     <a class="" href="{% url 'custom_report' e.id %}" target="_blank" role="menuitem">
                                                         <i class="fa-solid fa-file-lines"></i> Generate Custom Report
                                                     </a>
                                                 </li>
+
                                                 <li class="divider" role="separator"></li>
                                                 <li role="presentation">
                                                     <a href="{% url 'engagement_open_findings' e.id %}" role="menuitem">

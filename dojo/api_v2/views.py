@@ -177,6 +177,7 @@ from dojo.utils import (
 logger = logging.getLogger(__name__)
 
 
+
 def schema_with_prefetch() -> dict:
     return {
         "list": extend_schema(

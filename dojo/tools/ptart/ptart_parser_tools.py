@@ -62,7 +62,6 @@ def parse_cvss_vector(hit, cvss_type):
                 return c.clean_vector()
             except cvss.CVSS3Error:
                 return None
-
     return None
 
 

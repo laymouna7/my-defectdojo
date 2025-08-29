@@ -4,10 +4,13 @@ import mimetypes
 import operator
 import re
 import time
+import tempfile
+import os
+import zipfile
+import tarfile
 from datetime import datetime
 from functools import partial, reduce
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from time import strftime
 
 from django.conf import settings
@@ -116,6 +119,8 @@ from dojo.utils import (
     handle_uploaded_threat,
     redirect_to_return_url_or_else,
 )
+import shutil
+
 
 logger = logging.getLogger(__name__)
 
@@ -700,8 +705,6 @@ def add_tests(request, eid):
         "eid": eid,
         "eng": eng,
     })
-
-
 class ImportScanResultsView(View):
     def get_template(self) -> str:
         """Returns the template that will be presented to the user"""
@@ -735,8 +738,7 @@ class ImportScanResultsView(View):
             product = get_object_or_404(Product, id=product_id)
             engagement_or_product = product
         else:
-            msg = "Either Engagement or Product has to be provided"
-            raise Exception(msg)
+            raise Http404("Either Engagement or Product has to be provided")
         # Ensure the supplied user has access to import to the engagement or product
         user_has_permission_or_403(user, engagement_or_product, Permissions.Import_Scan_Result)
 
@@ -920,30 +922,21 @@ class ImportScanResultsView(View):
 
     def get_importer(
         self,
-        context: dict,
+        context: dict | None = None,
+        **kwargs,
     ) -> BaseImporter:
-        """Gets the importer to use"""
-        return DefaultImporter(**context)
+        """
+        Gets the importer to use. Accepts either a context dictionary or arbitrary
+        keyword args (or both). Merges them and forwards to the importer.
+        """
+        merged = {}
+        if context:
+            # if a context dict was passed positionally, copy it
+            merged.update(context)
+        # kwargs are typically provided when context is unpacked into keyword args
+        merged.update(kwargs)
+        return DefaultImporter(**merged)
 
-    def import_findings(
-        self,
-        context: dict,
-    ) -> str | None:
-        """Attempt to import with all the supplied information"""
-        try:
-            importer_client = self.get_importer(context)
-            context["test"], _, finding_count, closed_finding_count, _, _, _ = importer_client.process_scan(
-                context.pop("scan", None),
-            )
-            # Add a message to the view for the user to see the results
-            add_success_message_to_response(importer_client.construct_imported_message(
-                finding_count=finding_count,
-                closed_finding_count=closed_finding_count,
-            ))
-        except Exception as e:
-            logger.exception("An exception error occurred during the report import")
-            return f"An exception error occurred during the report import: {e}"
-        return None
 
     def process_form(
         self,
@@ -1037,29 +1030,210 @@ class ImportScanResultsView(View):
             context["cred_user"] = cred_user
         return None
 
-    def success_redirect(
-        self,
-        request: HttpRequest,
-        context: dict,
-    ) -> HttpResponseRedirect:
-        """Redirect the user to a place that indicates a successful import"""
-        duration = time.perf_counter() - request._start_time
-        LargeScanSizeProductAnnouncement(request=request, duration=duration)
-        ScanTypeProductAnnouncement(request=request, scan_type=context.get("scan_type"))
-        return HttpResponseRedirect(reverse("view_test", args=(context.get("test").id, )))
+    def success_redirect(self, request, context):
+        test = context.get("test")
+
+        if test is None:
+            # user-visible warning
+            messages.warning(
+                request,
+                _("No test was created. This may happen if the report was empty or contained only duplicates.")
+            )
+
+            # useful log for debugging
+            logger.warning("Import scan: no test created; context keys=%s", list(context.keys()))
+
+            # redirect to engagement if we have one, otherwise dashboard
+            engagement = context.get("engagement")
+            if engagement:
+                return HttpResponseRedirect(reverse("view_engagement", args=(engagement.id,)))
+            return HttpResponseRedirect(reverse("dashboard"))
+
+        return HttpResponseRedirect(reverse("view_test", args=(test.id,)))
+
+    def import_findings(self, context: dict) -> str | None:
+        uploaded = context.pop("scan", None)
+        if not uploaded:
+            logging.error("No scan file provided")
+            return "No scan file provided."
+
+        fname = getattr(uploaded, "name", "").lower()
+        is_archive = fname.endswith((".zip", ".tar.gz", ".tgz"))
+        is_nessus = fname.endswith(".nessus")
+        is_rapid7_xml = fname.endswith(".xml") and any(keyword in fname for keyword in ['rapid7', 'nexpose', 'insightvm'])
+
+        try:
+            importer_client = self.get_importer(**context)
+        except Exception as e:
+            logging.exception("Failed to get importer client")
+            return f"Failed to get importer client: {e}"
+
+        total_findings = 0
+        total_closed = 0
+
+        try:
+            if is_archive:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    archive_path = os.path.join(tmpdir, fname)
+                    # Stream archive to disk
+                    try:
+                        with open(archive_path, "wb+") as f:
+                            for chunk in uploaded.chunks():
+                                f.write(chunk)
+                    except Exception as e:
+                        logging.exception("Failed to write uploaded archive")
+                        return f"Failed to write uploaded archive: {e}"
+
+                    # Extract files
+                    try:
+                        if fname.endswith('.zip'):
+                            with zipfile.ZipFile(archive_path, 'r') as z:
+                                z.extractall(tmpdir)
+                                members = z.namelist()
+                        else:
+                            with tarfile.open(archive_path, 'r:*') as t:
+                                t.extractall(tmpdir)
+                                members = t.getnames()
+                    except Exception as e:
+                        logging.exception("Failed to extract archive")
+                        return f"Failed to extract archive: {e}"
+
+                    # Process each extracted file
+                    for member in members:
+                        if member.startswith('.') or '/' in member or member.lower() == fname:
+                            continue
+                        
+                        member_lower = member.lower()
+                        # Check for specific scan types
+                        scan_type = None
+                        if member_lower.endswith('.nessus'):
+                            scan_type = "Nessus Scan"
+                        elif member_lower.endswith('.xml') and any(keyword in member_lower for keyword in ['rapid7', 'nexpose', 'insightvm']):
+                            scan_type = "Rapid7 XML"
+                        elif not member_lower.endswith(('.nessus', '.xml', '.json', '.html', '.txt', '.csv')):
+                            logging.debug(f"Skipping unsupported file: {member}")
+                            continue
+
+                        full_path = os.path.join(tmpdir, member)
+                        if not os.path.isfile(full_path):
+                            logging.debug(f"Skipping non-file member: {member}")
+                            continue
+
+                        try:
+                            with open(full_path, 'rb') as f:
+                                # Set specific scan type if detected
+                                if scan_type:
+                                    original_scan_type = context.get('scan_type')
+                                    context['scan_type'] = scan_type
+                                    _, _, added, closed, *_ = importer_client.process_scan(f)
+                                    # Restore original scan type for subsequent files
+                                    if original_scan_type:
+                                        context['scan_type'] = original_scan_type
+                                    else:
+                                        context.pop('scan_type', None)
+                                else:
+                                    _, _, added, closed, *_ = importer_client.process_scan(f)
+                                total_findings += added
+                                total_closed += closed
+                        except Exception as e:
+                            logging.exception(f"Failed to process file {member}")
+                            add_error_message_to_response(f"Failed to process file {member}: {e}")
+
+            elif is_nessus or is_rapid7_xml:
+                # Direct file processing for Nessus or Rapid7
+                tmp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
+                        tmp_path = tmpfile.name
+                        for chunk in uploaded.chunks():
+                            tmpfile.write(chunk)
+
+                    # Set appropriate scan type
+                    if is_nessus:
+                        context['scan_type'] = "Nessus Scan"
+                    elif is_rapid7_xml:
+                        context['scan_type'] = "Rapid7 XML"
+
+                    with open(tmp_path, 'rb') as f:
+                        _, _, added, closed, *_ = importer_client.process_scan(f)
+                        total_findings += added
+                        total_closed += closed
+                except Exception as e:
+                    logging.exception("Failed to process scan file")
+                    return f"Failed to process scan file: {e}"
+                finally:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+
+            else:
+                # Regular file processing
+                tmp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False) as tmpfile:
+                        tmp_path = tmpfile.name
+                        for chunk in uploaded.chunks():
+                            tmpfile.write(chunk)
+
+                    with open(tmp_path, 'rb') as f:
+                        _, _, added, closed, *_ = importer_client.process_scan(f)
+                        total_findings += added
+                        total_closed += closed
+                except Exception as e:
+                    logging.exception("Failed to process single file")
+                    return f"Failed to process single file: {e}"
+                finally:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+
+            # Combined success message
+            add_success_message_to_response(
+                importer_client.construct_imported_message(
+                    finding_count=total_findings,
+                    closed_finding_count=total_closed,
+                )
+            )
+
+        except Exception as e:
+            logging.exception("An unexpected exception occurred during the report import")
+            return f"An unexpected exception occurred during the report import: {e}"
+
+        return None
 
     def failure_redirect(
-        self,
-        request: HttpRequest,
-        context: dict,
-    ) -> HttpResponseRedirect:
-        """Redirect the user to a place that indicates a failed import"""
+            self,
+            request: HttpRequest,
+            context: dict,
+        ) -> HttpResponseRedirect:
+        """Redirect the user to a place that indicates a failed import."""
+        # Log the error (for debugging)
         ErrorPageProductAnnouncement(request=request)
-        return HttpResponseRedirect(reverse(
-            "import_scan_results",
-            args=(context.get("engagement", context.get("product")).id, ),
-        ))
 
+        # Safely get engagement or product from context
+        obj = context.get("engagement") or context.get("product")
+        if obj is None:
+            logging.error("Import failed: no engagement or product found in context")
+
+            # If AJAX, return JSON so frontend can handle
+            if request.headers.get("x-requested-with") == "XMLHttpRequest":
+                return JsonResponse({
+                    "success": False,
+                    "error": "Import failed: no engagement or product found in context"
+                }, status=400)
+
+            # Otherwise, redirect with message
+            add_error_message_to_response("Import failed: no engagement or product found in context")
+            return redirect("dashboard")  # fallback URL
+
+        # If AJAX, return success + redirect URL
+        if request.headers.get("x-requested-with") == "XMLHttpRequest":
+            return JsonResponse({
+                "success": True,
+                "redirect_url": reverse("import_scan_results", args=(obj.id,))
+            })
+
+        # Normal POST fallback
+        return HttpResponseRedirect(reverse("import_scan_results", args=(obj.id,)))
+  
     def get(
         self,
         request: HttpRequest,
@@ -1067,14 +1241,21 @@ class ImportScanResultsView(View):
         product_id: int | None = None,
     ) -> HttpResponse:
         """Process GET requests for the Import View"""
-        # process the request and path parameters
-        request, context = self.handle_request(
-            request,
-            engagement_id=engagement_id,
-            product_id=product_id,
-        )
-        # Render the form
-        return render(request, self.get_template(), context)
+        try:
+            # process the request and path parameters
+            request, context = self.handle_request(
+                request,
+                engagement_id=engagement_id,
+                product_id=product_id,
+            )
+            # Render the form
+            return render(request, self.get_template(), context)
+        except Http404:
+            raise
+        except Exception as e:
+            logger.exception("Error in import scan results view")
+            messages.error(request, f"Error loading import form: {str(e)}")
+            return redirect('dashboard')
 
     def post(
         self,
@@ -1083,34 +1264,41 @@ class ImportScanResultsView(View):
         product_id: int | None = None,
     ) -> HttpResponse:
         """Process POST requests for the Import View"""
-        # process the request and path parameters
-        request, context = self.handle_request(
-            request,
-            engagement_id=engagement_id,
-            product_id=product_id,
-        )
-        request._start_time = time.perf_counter()
-        # ensure all three forms are valid first before moving forward
-        if not self.validate_forms(context):
-            return self.failure_redirect(request, context)
-        # Process the jira form if it is present
-        if form_error := self.process_jira_form(request, context.get("jform"), context):
-            add_error_message_to_response(form_error)
-            return self.failure_redirect(request, context)
-        # Process the import form
-        if form_error := self.process_form(request, context.get("form"), context):
-            add_error_message_to_response(form_error)
-            return self.failure_redirect(request, context)
-        # Kick off the import process
-        if import_error := self.import_findings(context):
-            add_error_message_to_response(import_error)
-            return self.failure_redirect(request, context)
-        # Process the credential form
-        if form_error := self.process_credentials_form(request, context.get("cred_form"), context):
-            add_error_message_to_response(form_error)
-            return self.failure_redirect(request, context)
-        # Otherwise return the user back to the engagement (if present) or the product
-        return self.success_redirect(request, context)
+        try:
+            # process the request and path parameters
+            request, context = self.handle_request(
+                request,
+                engagement_id=engagement_id,
+                product_id=product_id,
+            )
+            request._start_time = time.perf_counter()
+            # ensure all three forms are valid first before moving forward
+            if not self.validate_forms(context):
+                return self.failure_redirect(request, context)
+            # Process the jira form if it is present
+            if form_error := self.process_jira_form(request, context.get("jform"), context):
+                add_error_message_to_response(form_error)
+                return self.failure_redirect(request, context)
+            # Process the import form
+            if form_error := self.process_form(request, context.get("form"), context):
+                add_error_message_to_response(form_error)
+                return self.failure_redirect(request, context)
+            # Kick off the import process
+            if import_error := self.import_findings(context):
+                add_error_message_to_response(import_error)
+                return self.failure_redirect(request, context)
+            # Process the credential form
+            if form_error := self.process_credentials_form(request, context.get("cred_form"), context):
+                add_error_message_to_response(form_error)
+                return self.failure_redirect(request, context)
+            # Otherwise return the user back to the engagement (if present) or the product
+            return self.success_redirect(request, context)
+        except Http404:
+            raise
+        except Exception as e:
+            logger.exception("Error in import scan results view")
+            messages.error(request, f"Error during import: {str(e)}")
+            return self.failure_redirect(request, {})
 
 
 @user_is_authorized(Engagement, Permissions.Engagement_Edit, "eid")

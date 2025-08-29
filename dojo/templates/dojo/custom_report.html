@@ -1,0 +1,109 @@
+{% load static i18n %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Custom Engagement Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- Minimal styling so page is readable even if static not served -->
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 18px; color: #222; }
+    .report-header { background:#f8f9fa; padding:16px; border-radius:6px; border-left:4px solid #3c8dbc; margin-bottom:18px; }
+    .logo { max-width:220px; display:block; margin: 0 auto 10px auto; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { border:1px solid #ddd; padding:8px; text-align:left; vertical-align:top; }
+    th { background:#f2f2f2; font-weight:600; }
+    .no-print { margin-top:12px; }
+    @media print { .no-print { display:none !important; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div style="text-align:center;margin-bottom:12px;">
+      <img src="{% static 'dojo/img/logo.png' %}" alt="Logo" class="logo" onerror="this.style.display='none'"/>
+    </div>
+
+    <div class="report-header">
+      <h2>
+        {% if engagement %}Report for Engagement: {{ engagement.name }}{% else %}Report for All Engagements{% endif %}
+      </h2>
+      <p>
+        <strong>Product:</strong>
+        {% if engagement and engagement.product %}
+          {{ engagement.product.name }}
+        {% else %}
+          All products
+        {% endif %}
+        &nbsp;|&nbsp;
+        <strong>Report Date:</strong> {% now "F j, Y, g:i a" %}
+      </p>
+    </div>
+
+    <h4>Summary</h4>
+    {% with findings|length as findings_count %}
+      <p><strong>Total findings shown:</strong> {{ findings_count }}</p>
+    {% endwith %}
+
+    <h4>Findings</h4>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:6%">ID</th>
+          <th style="width:56%">Title</th>
+          <th style="width:12%">Severity</th>
+          <th style="width:12%">Status</th>
+          <th style="width:14%">Test / Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if findings %}
+          {% for f in findings %}
+            <tr>
+              <td>{{ f.id }}</td>
+              <td>
+                {% if f.title %}{{ f.title }}{% else %}<em>(no title)</em>{% endif %}
+                {% if f.cwe %}
+                  <div style="font-size:11px;color:#666">CWE: {{ f.cwe }}</div>
+                {% endif %}
+              </td>
+              <td>{% if f.severity %}{{ f.severity }}{% else %}-{% endif %}</td>
+              <td>{% if f.status %}{{ f.status }}{% else %}-{% endif %}</td>
+              <td>
+                {% if f.test %}
+                  {{ f.test.name }}<br/>
+                  {% if f.date %}<small style="color:#666">{{ f.date }}</small>{% elif f.test.target_start %}<small style="color:#666">{{ f.test.target_start }}</small>{% endif %}
+                {% else %}
+                  -
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="5" style="text-align:center;color:#666">No findings to display</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    <div class="no-print">
+      
+      
+    </div>
+
+    <hr/>
+    <footer style="font-size:12px;color:#666;margin-top:12px">
+      <div><strong>Generated:</strong> {% now "F j, Y, g:i a" %}</div>
+      <div style="margin-top:6px">Standalone custom report (no core template tags required).</div>
+    </footer>
+  </div>
+
+  <script>
+    (function() {
+      var btn = document.getElementById('print-btn');
+      if (btn) btn.addEventListener('click', function(){ window.print(); });
+    })();
+  </script>
+</body>
+</html>
