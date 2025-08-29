@@ -1,0 +1,47 @@
+1. Zipped Report Import
+
+    Implemented support for importing .zip and .tar.gz archives.
+
+    Automatic extraction of contained reports with per-file validation before processing.
+
+    Simplifies bulk report handling and streamlines multi-file imports.
+
+2. Large File Handling
+
+    Added chunked upload processing for very large scan files.
+
+    Introduced a configurable size limit via settings.SCAN_FILE_MAX_SIZE.
+
+    Improves stability and prevents timeouts or memory issues during upload.
+
+3. Report Templates
+
+    Enhanced serializers to support structured report data handling.
+
+    Created a new Custom Engagement Report:
+
+        Added template custom_report.html for engagement-level reporting.
+
+        Integrated with a dedicated view (custom_report_view) and URL route.
+
+        Cleaned up non-functional buttons (removed “Print/Save PDF” & “Back”).
+
+        Linked into the UI (engagement.html, view_engagements.html) for easy access.
+
+4. Nessus Scan Import
+
+    Integrated support for .nessus files.
+
+    Case-insensitive extension validation for more reliable imports.
+
+    Fully integrated into the standard DefectDojo scan import pipeline.
+
+5. Rapid7 Scan Import
+
+    Added support for Rapid7 XML scan reports.
+
+    Handled through the existing standardized import workflow.
+
+    Ensures findings are parsed and mapped consistently across tools.
+
+
